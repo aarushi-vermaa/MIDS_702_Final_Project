@@ -1,0 +1,554 @@
+---
+title: "IDS 702 - Final Project: Who is more  likely to accept a coupon? - In Vehicle Coupon Acceptance "
+date: "12/11/2021"
+author: "Aarushi Verma"
+output:
+  pdf_document: default
+geometry: margin=0.5in
+---
+
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+library(arm)
+library(pROC)
+library(e1071)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(stargazer)
+```
+
+## __Summary__
+In the project, we use logistic regression to model the odds of a driver accepting a coupon based on a range of characteristics. The goal of the project is to identify important characteristics that are associated with and affect a driver's decision to accept a coupon and quantify these relationships. From the results, we find most variables in the dataset have an impact on the odds. Specifically, variables such as gender, coupon, weather, expiration have noticeably large effects. However, we must ponder on the validity of the inferences given a few limitations of the data.
+
+
+## __Introduction__
+
+A survey was carried out on Amazon Mechanical Turk (Crowd sourcing market place) to record responses to various conditions based on which a driver may decide to accept a coupon or not. 
+The data from this survey is being used to build a Bayesian Framework for Machine Learning Research for classification problems. For this project, we are using this data to understand what are the most important factors that may influence a driver's decision to accept a coupon. Using logistic regression to quantify the factors that affect a driver's decision we are interested to see whether the response variable varies across demographics, coupon specific and driver specific factors. 
+
+## __Data__
+
+### Data Pre-Processing
+The dataset is obtained from UC Irvine's Machine Learning Repository. It contains 12,684 observations for 26 variables. The response variable is a binary variable indicating whether a driver accepted a coupon offered to them or not. Other variables include all categorical variables which can be bifurcated into 4 categories:
+
+* Demographic (Age, Gender, Education etc.)
+* Driver Specific (Destination, Passenger etc.)
+* Coupon Specific (Type, Expiration)
+* External (Weather, Temperature, Time of day)
+
+Overall, the dataset is not extremely unbalanced with 5,474 respondents who accepted the coupon and 7,210 who did not accept the coupon. 
+
+Before proceeding with the analysis, we inspected the dataset and observed several issues that needed to addressed before going forward. 
+
+The first issue with the data is of missing values. For one of the columns - `car` ~99% of the values are missing. There is no way to impute such large amount of missing data since it would not be representative of the actual scenario. Secondly, we do not have enough information available to impute and therefore we drop this column. We have 5 more columns with some missing values - `Bar`, `CoffeeHouse`, `CarryAway`, `RestaurantLessThan20` and `Restaurant20To50`. However, the percentage of missing values for each of these variables is less than 5%, therefore we drop these observations. 
+
+Since all the variables are factor variables, the second issue we observed was of high cardinality or multiple unique levels for a single variable. For example, `occupation` has 26 levels. Too many levels may result in fewer observations for each category and this may affect the inferences made based on the model. To rectify this issue, we combined levels of jobs into similar categories based on external research and reduced the number of levels to 8. 
+
+The third issue was of correlation between variables. Two variables in the data `direction_same` and `direction_opp` represent if the restaurant coupon offered to the driver is in the same direction of their destination or opposite direction. These variables have a correlation of -1 indicating that if one variable is true for one respondent, the other will be false. Since these variables provide us with the same information we dropped one of them. The variable `weather` and `temperature` also seem to add the same information to the data. Each have 3 levels which provide us the same information. Therefore we drop the `temperature` column. Similarly, the variable $toCoupon_GEQ5min$ which represents if the restaurant is 5 mins away from a driver's house, only has values 1 for all the observations. This does not provide any information to explain the variability in the response variable and hence it is dropped. We must note that since all the variables are factors, computing correlation is tough. (We could only check for binary coded variables)
+
+After these processes the predictors are reduced to 21 and number of observations to 12,079.
+
+```{r, include= FALSE, results= "asis" , message = FALSE, warning = FALSE, echo=FALSE}
+data <- read.csv('/Users/Aarushi/Duke/MIDS - Fall 2021/Fall 2021/702_IDS/Final Projects/in-vehicle-coupon-recommendation.csv')
+#Looking at the data
+dim(data)
+str(data)
+# The data has 12684 rows ans 26 columns
+
+
+#Check for null values
+sum(is.na(data))
+#There are no null values
+
+#Looking at unique values in columns
+unique(data$car) #- #Empty values
+unique(data$Bar) # - Null values
+unique(data$CoffeeHouse) #Null values
+unique(data$CarryAway) #EMpty values
+unique(data$RestaurantLessThan20) #EMpty values
+unique(data$Restaurant20To50) #EMpty values
+unique(data$toCoupon_GEQ5min) #Only one unique value
+```
+
+```{r, include=FALSE, results='asis', message=FALSE, warning=FALSE, echo=FALSE}
+#Converting blann spaces in columns to NA
+data$car[data$car ==""] <- NA
+data$CoffeeHouse[data$CoffeeHouse ==""] <- NA
+data$CarryAway[data$CarryAway==""] <- NA
+data$RestaurantLessThan20[data$RestaurantLessThan20 ==""] <- NA
+data$Restaurant20To50[data$Restaurant20To50 ==""] <- NA
+data$Bar[data$Bar ==""] <- NA
+
+#Checking for null values again
+namedCounts <- sapply(data, function(x) round((sum(is.na(x))/length(x))*100,2))
+namedCounts <- namedCounts[namedCounts>0]
+cat("Columns with missing value\n")
+print(paste0(names(namedCounts)," :",unname(namedCounts),"%"))
+
+#The column car has almost 100% missing values 
+#whereas 4 other columns with less than 2% missing values
+#Dropping car column and all rows with missing values
+
+data_new<- subset(data, select= -c(car))
+str(data_new)
+
+coupon <- na.omit(data_new)
+
+namedCounts <- sapply(coupon, function(x) round((sum(is.na(x))/length(x))*100,2))
+namedCounts <- namedCounts[namedCounts>0]
+cat("Columns with missing value\n")
+print(paste0(names(namedCounts)," :",unname(namedCounts),"%"))
+
+#No more null values in the dataset
+```
+
+```{r, include=FALSE, results='asis', message=FALSE, warning=FALSE, echo=FALSE}
+
+coupon$coupon_accepted <- as.factor(coupon$Y)
+
+#Renaming values in passenger column
+coupon$passanger[which(coupon$passanger=="Friend(s)")] <- "Friends"
+coupon$passanger[which(coupon$passanger=="Kid(s)")] <- "Kids"
+
+
+#Created more subsets in the occupation column
+unique(coupon$occupation)
+
+coupon$occupation_class <- NA                                 
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Healthcare Support", 
+                                "Healthcare Practitioners & Technical"))] <- "Healthcare"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Life Physical Social Science", 
+                                "Community & Social Services"))] <- "Social"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Construction & Extraction","Installation Maintenance & Repair", 
+                                "Building & Grounds Cleaning & Maintenance", 
+                                "Transportation & Material Moving","Food Preparation & Serving Related"))] <- "Trade Workers"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Sales & Related","Management","Office & Administrative Support",
+                                "Business & Financial", "Legal","Education&Training&Library",
+                                "Architecture & Engineering", "Arts Design Entertainment Sports & Media",
+                                "Computer & Mathematical"))] <- "White Collar"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Retired"))] <- "Retired"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Student"))] <- "Student"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Production Occupations","Protective Service" ,
+                                "Personal Care & Service" , "Farming Fishing & Forestry"))] <- "Others"
+
+coupon$occupation_class[which(coupon$occupation %in% 
+                              c("Unemployed"))] <- "Unemployed"
+table(coupon$occupation)
+table(coupon$occupation_class)
+
+unique(coupon$education)
+coupon$education[coupon$education == 'Graduate degree (Masters or Doctorate)'] <- 'Graduate degree'
+coupon$education[coupon$education == 'Some college - no degree'] <- 'College - no degree'
+coupon$education[coupon$education == 'Some High School'] <- 'High School - no degree'
+unique(coupon$education)
+
+########Age########
+unique(coupon$age)
+coupon$age[coupon$age == '21'] <- '21-30'
+coupon$age[coupon$age == '26'] <- '21-30'
+coupon$age[coupon$age == '31'] <- '31-40'
+coupon$age[coupon$age == '36'] <- '31-40'
+coupon$age[coupon$age == '41'] <- '41-50'
+coupon$age[coupon$age == '46'] <- '41-50'
+unique(coupon$age)
+
+###########Restaurant20To50
+unique(coupon$Restaurant20To50)
+coupon$Restaurant20To50[coupon$Restaurant20To50 == '1~3'] <- '1-3'
+coupon$Restaurant20To50[coupon$Restaurant20To50 == 'less1'] <- 'less than 1'
+coupon$Restaurant20To50[coupon$Restaurant20To50 == 'gt8'] <- 'greater than 8'
+coupon$Restaurant20To50[coupon$Restaurant20To50 == '4~8'] <- '4-8'
+unique(coupon$Restaurant20To50)
+
+###########RestaurantLessThan20To50
+unique(coupon$RestaurantLessThan20)
+coupon$RestaurantLessThan20[coupon$RestaurantLessThan20 == '1~3'] <- '1-3'
+coupon$RestaurantLessThan20[coupon$RestaurantLessThan20 == 'less1'] <- 'less than 1'
+coupon$RestaurantLessThan20[coupon$RestaurantLessThan20 == 'gt8'] <- 'greater than 8'
+coupon$RestaurantLessThan20[coupon$RestaurantLessThan20 == '4~8'] <- '4-8'
+unique(coupon$RestaurantLessThan20)
+
+###########Bar
+unique(coupon$Bar)
+coupon$Bar[coupon$Bar == '1~3'] <- '1-3'
+coupon$Bar[coupon$Bar == 'less1'] <- 'less than 1'
+coupon$Bar[coupon$Bar == 'gt8'] <- 'greater than 8'
+coupon$Bar[coupon$Bar == '4~8'] <- '4-8'
+unique(coupon$Bar)
+
+###########CoffeeHouse
+unique(coupon$CoffeeHouse)
+coupon$CoffeeHouse[coupon$CoffeeHouse == '1~3'] <- '1-3'
+coupon$CoffeeHouse[coupon$CoffeeHouse == 'less1'] <- 'less than 1'
+coupon$CoffeeHouse[coupon$CoffeeHouse == 'gt8'] <- 'greater than 8'
+coupon$CoffeeHouse[coupon$CoffeeHouse == '4~8'] <- '4-8'
+unique(coupon$CoffeeHouse)
+
+###########CarryAway
+unique(coupon$CarryAway)
+coupon$CarryAway[coupon$CarryAway == '1~3'] <- '1-3'
+coupon$CarryAway[coupon$CarryAway == 'less1'] <- 'less than 1'
+coupon$CarryAway[coupon$CarryAway == 'gt8'] <- 'greater than 8'
+coupon$CarryAway[coupon$CarryAway == '4~8'] <- '4-8'
+unique(coupon$CarryAway)
+
+
+#Converting character variables to factor variables
+coupon$destination <- as.factor(coupon$destination) 
+coupon$passanger <- as.factor(coupon$passanger) 
+coupon$weather <- as.factor(coupon$weather)
+coupon$time <- as.factor(coupon$time)
+coupon$gender <- as.factor(coupon$gender)
+coupon$coupon <- as.factor(coupon$coupon)
+coupon$expiration <- as.factor(coupon$expiration)
+coupon$age <- as.factor(coupon$age)
+coupon$Bar <- as.factor(coupon$Bar)
+coupon$maritalStatus <- as.factor(coupon$maritalStatus)
+coupon$education <- as.factor(coupon$education)
+coupon$occupation_class <- as.factor(coupon$occupation_class)
+coupon$income <- as.factor(coupon$income)
+coupon$CoffeeHouse <- as.factor(coupon$CoffeeHouse)
+coupon$CarryAway <- as.factor(coupon$CarryAway)
+coupon$Restaurant20To50 <- as.factor(coupon$Restaurant20To50)
+coupon$RestaurantLessThan20 <- as.factor(coupon$RestaurantLessThan20)
+coupon$temperature <- as.factor(coupon$temperature)
+coupon$direction_opp <- as.factor(coupon$direction_opp)
+coupon$toCoupon_GEQ15min <- as.factor(coupon$toCoupon_GEQ15min)
+coupon$toCoupon_GEQ25min <- as.factor(coupon$toCoupon_GEQ25min)
+coupon$has_children <- as.factor(coupon$has_children)
+
+#Dropping GEQ5 min because only single value. Direction same and opp are correlated with -1
+#Also dropping temp because weather and temp are very similar
+coupon_sub<- subset(coupon, select= -c(direction_same, toCoupon_GEQ5min, temperature))
+```
+
+### Exploratory Data Analysis
+```{r, include=FALSE, results='asis', message=FALSE, warning=FALSE, echo=FALSE}
+table(coupon[,c("destination","coupon_accepted")])
+table(coupon[,c("destination","Y")])/sum(table(coupon[,c("destination","Y")]))
+
+table(coupon[,c("Y")])/sum(table(coupon[,c("Y")]))
+
+table(coupon[,c("toCoupon_GEQ25min","Y")])
+table(coupon[,c("toCoupon_GEQ25min","Y")])/sum(table(coupon[,c("toCoupon_GEQ25min","Y")]))
+
+table(coupon_sub[,c("education","Y")])
+table(coupon_sub[,c("education","Y")])/sum(table(coupon_sub[,c("education","Y")]))
+
+table(coupon_sub[,c("income","Y")])
+table(coupon_sub[,c("income","Y")])/sum(table(coupon_sub[,c("income","Y")]))
+
+
+table(coupon_sub[,c("destination","Y")])
+table(coupon_sub[,c("destination","Y")])/sum(table(coupon_sub[,c("destination","Y")]))
+chisq.test(table(coupon_sub[,c("Y","passanger")]))
+
+table(coupon$has_children)
+```
+
+```{r, include=FALSE, results='asis', message=FALSE, warning=FALSE, echo=FALSE}
+
+apply(table(coupon_sub[,c("Y","destination")])/sum(table(coupon_sub[,c("Y","destination")])),
+      2,function(x) x/sum(x))
+## Big change in Prob for No Urgent Place
+
+apply(table(coupon_sub[,c("Y","passanger")])/sum(table(coupon_sub[,c("Y","passanger")])),
+      2,function(x) x/sum(x))
+# Higher probability fir Friends, lease for KIDS
+
+apply(table(coupon_sub[,c("Y","weather")])/sum(table(coupon_sub[,c("Y","weather")])),
+      2,function(x) x/sum(x))
+# Highest in Sunny
+
+apply(table(coupon_sub[,c("Y","time")])/sum(table(coupon_sub[,c("Y","time")])),
+      2,function(x) x/sum(x))
+#Highest around 10 AM and 2PM (Meal Times)
+
+apply(table(coupon_sub[,c("Y","coupon")])/sum(table(coupon_sub[,c("Y","coupon")])),
+      2,function(x) x/sum(x))
+#Highest for Carryout and TakeAway and Restaurant <20
+
+apply(table(coupon_sub[,c("Y","expiration")])/sum(table(coupon_sub[,c("Y","expiration")])),
+      2,function(x) x/sum(x))
+#Highest for 24 hour validity
+
+apply(table(coupon_sub[,c("Y","gender")])/sum(table(coupon_sub[,c("Y","gender")])),
+      2,function(x) x/sum(x))
+#Male driver higher prob
+
+apply(table(coupon_sub[,c("Y","age")])/sum(table(coupon_sub[,c("Y","age")])),
+      2,function(x) x/sum(x))
+#Highest for below 21
+
+apply(table(coupon_sub[,c("Y","maritalStatus")])/sum(table(coupon_sub[,c("Y","maritalStatus")])),
+      2,function(x) x/sum(x))
+
+
+apply(table(coupon_sub[,c("Y","has_children")])/sum(table(coupon_sub[,c("Y","has_children")])),
+      2,function(x) x/sum(x))
+#Highest for Single
+
+apply(table(coupon_sub[,c("Y","education")])/sum(table(coupon_sub[,c("Y","education")])),
+      2,function(x) x/sum(x))
+#High School No degree highest
+
+apply(table(coupon_sub[,c("Y","occupation_class")])/sum(table(coupon_sub[,c("Y","occupation_class")])),
+      2,function(x) x/sum(x))
+#Highest for Healthcare
+
+apply(table(coupon_sub[,c("Y","income")])/sum(table(coupon_sub[,c("Y","income")])),
+      2,function(x) x/sum(x))
+#More or less than the same
+
+apply(table(coupon_sub[,c("Y","toCoupon_GEQ15min")])/sum(table(coupon_sub[,c("Y","toCoupon_GEQ15min")])),
+      2,function(x) x/sum(x))
+
+apply(table(coupon_sub[,c("Y","direction_opp")])/sum(table(coupon_sub[,c("Y","direction_opp")])),
+      2,function(x) x/sum(x))
+```
+
+
+```{r, include=FALSE, results='asis', message=FALSE, warning=FALSE, echo=FALSE}
+
+library(gridExtra)
+
+#Destination
+p1 <- ggplot(coupon, aes(x=destination, fill=coupon_accepted)) +
+  geom_bar(stat="count")
+g1 <- ggplot(coupon, aes(x=destination, fill=coupon_accepted)) +
+  geom_bar(position="fill")
+
+#passenger 
+p2 <- ggplot(coupon, aes(x=passanger, fill=coupon_accepted)) +
+  geom_bar(stat="count")
+g2 <- ggplot(coupon, aes(x=passanger, fill=coupon_accepted)) +
+  geom_bar(position="fill")
+
+#weather
+p3 <- ggplot(coupon, aes(x=weather, fill=coupon_accepted)) +
+  geom_bar(stat="count")
+g3 <- ggplot(coupon, aes(x=weather, fill=coupon_accepted)) +
+  geom_bar(position="fill")
+
+#time
+#p4 <- ggplot(cleaned_data, aes(x=time, fill=Y)) +
+#geom_bar(stat="count")
+
+#gender
+# p5 <- ggplot(cleaned_data, aes(x=gender, fill=Y)) +
+#   geom_bar(stat="count")
+
+#maritalStatus   
+p6 <- ggplot(coupon, aes(x=maritalStatus, fill=coupon_accepted)) +
+  geom_bar(stat="count")+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+g6 <- ggplot(coupon, aes(x=maritalStatus, fill=coupon_accepted)) +
+  geom_bar(position="fill")+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+grid.arrange(p1,g1, p2,g2, p3,g3, p6,g6, ncol=2)
+```
+
+Before the modelling process, data exploration was undertaken to elucidate the relations and associations among the possible predictors. A large number of plots and summary statistics were generated to identify associations between the variables and make strong judgement about which predictors were likely to prove important in the modeling process. Additionally, these
+plots and statistics were used to identify potential concerns within the data that may impact the analysis. In particular, as one of the objectives of this analysis is to determine if gender, occupation, and education are important predictors, their plots were studied closely. 
+
+Due to the nature of the dataset, many predictors have interesting interaction effects that are worth exploring. The graphs below show a sample of spread of predictors and potential interaction effects between predictors over the response variable.
+
+
+```{r results='asis', fig.width = 12, fig.height = 3.5,echo=FALSE, fig.align="center", message=FALSE, warning=FALSE, header=FALSE}
+
+
+p1 <- ggplot(coupon, aes(x=destination, fill=coupon_accepted)) +
+  geom_bar(color = "black",stat="count")+ labs(title = "Destination vs. Coupon Accepted?")+
+  theme_classic() + scale_fill_brewer(palette="Paired")+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+p2 <- ggplot(coupon, aes(x=education, fill=coupon_accepted)) +
+  geom_bar(color = "black",stat="count") + 
+  labs(title = "Education vs. Coupon Accepted?")+
+  theme_classic() + scale_fill_brewer(palette="Paired")+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+```{r echo=FALSE, fig.width = 10,fig.height=3.5, fig.align="center", message=FALSE, warning=FALSE, header=FALSE,}
+
+# p1 = ggplot(coupon, aes(coupon, group = coupon_accepted, fill = coupon_accepted)) +
+#   geom_bar(color = "black", position = "dodge") +
+#   geom_text(aes(label = ..count..), stat = "count", vjust = -0.3, position = position_dodge(0.9), size = 3) +
+#   facet_wrap(~expiration) +
+#   scale_fill_brewer(palette="Paired") +
+#   theme_classic(base_size = 11) + labs(title = "Coupon Type vs. Coupon Accepted? by Expiration")
+
+p3 = ggplot(coupon, aes(coupon, group = coupon_accepted, fill = coupon_accepted)) +
+  geom_bar(color = "black", position = "dodge") +
+  geom_text(aes(label = ..count..), stat = "count", vjust = -0.3, position = position_dodge(0.9), size = 3) +
+  facet_wrap(~expiration) +
+  scale_fill_brewer(palette="Paired") +
+  theme_classic(base_size = 11,) + labs(title = "Coupon Type vs. Coupon Accepted? by Expiration")+ theme(axis.text.x = element_text(angle = 15, hjust = 1))
+p3
+```
+
+The plot “Destination v.Coupon Accepted?” and “Education v.Coupon Accepted?” shows the relationship between coupon acceptance the two variables. We can observe that the number of people who have accepted coupons varies wherein we have a maximum number of people accepting coupons when their destination is $No\ Urgent\ Place$ and if they are people in $college\ with\ no\ degree$
+
+The plot “Coupon Type v.Coupon Accepted by Expiration” shows that the relationship between the probability of accepting coupon and the coupon type differ depending on the whether coupon expires within 2 hours or 24 hours. Specifically, a coupon for a Coffee House is more likely to be decline if it expires within 2 hours as opposed to when it is valid for 24 hours. However, a coupon for a bar is more likely to be decline when it is valid for 24 hours. 
+
+While there are multiple interesting interactions, it is important to note that in the proceeding model building section, not all of potential interactions are included in the final model owing to lack of observations in each category and ease of interpretation of findings.
+
+## __Model__
+
+To build our model, we first built our baseline logistic regression model which included all our main effects. Next we used step wise selection using BIC to generate our final logistic model with only main effects. 
+
+The initial model is given as the following:
+
+$$ y_i|x_i \sim Bernoulli(\pi_i)\ log(\frac{\pi_i}{1 - \pi_i}) = x_i\beta,$$
+where $yi$ is the binary variable indicating whether a driver accepts a coupon and $xi$ includes all predictors as main effects. Using backward selection with the BIC criterion our model has 9 main effects that were significant. To assess the model further, we observe binned plots of the residuals against the fitted values and the continuous predictors. We check for randomness in these plots to ensure that our model satisfies the independence of errors assumption. The binned plot for residuals against fitted values seems random, except for a couple of points which are outside of the 95% confidence intervals. Since our data only has factor variable we cannot check the binned plot for any specific variables to assess any need for transformations
+
+To further explain the variation in our model,we then included some interaction effects which we thought to be significant, or they answered questions with respect to the study. With the help of anova tests we assessed if these interaction were significant to our model.
+
+```{r include = FALSE ,echo=FALSE, fig.align="center", fig.height=3.5, message=FALSE, warning=FALSE, header=FALSE, out.width="50%"}
+coupon_new<- subset(coupon_sub, select= -c(occupation, coupon_accepted)) #removing redundant columns
+
+#BIC
+
+#Model using backward selection with just main effects
+Model_BIC <-glm(formula = Y ~ destination + passanger + weather  + 
+                  coupon + expiration + gender + education + CoffeeHouse + 
+                  direction_opp, family = binomial, data = coupon_new)
+summary(Model_BIC)
+
+
+
+```
+
+```{r , include = FALSE, out.width="50%",echo=FALSE,header= FALSE,fig.align ="center",message = FALSE, warning = FALSE, fig.height=3.5}
+#############################
+rawresid1 <- residuals(Model_BIC,"resp")
+binnedplot(x=fitted(Model_BIC),y=rawresid1,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot_1",col.pts="navy")
+```
+
+```{r, include = FALSE, out.width="50%",echo=FALSE,header= FALSE,fig.align ="center",message = FALSE, warning = FALSE, fig.height=3.5}
+#############################
+coupreg_1 <- glm( Y ~ . + coupon*expiration + income*occupation_class + destination*passanger ,  data = coupon_new, family = binomial,maxit = 100)
+
+coupreg_2 <- glm( Y ~ destination + passanger + weather + 
+                    coupon + expiration + gender + age +
+                    education + income + Bar + CoffeeHouse + 
+                    direction_opp + occupation_class + coupon*expiration, data = coupon_new,
+                  family = binomial)
+
+n <- nrow(coupon_new)
+
+Model_backward <- step(coupreg_2, scope = formula(coupreg_1),direction="backward",trace=0,k = log(n))
+Model_backward$call
+```
+
+We incorporated the following interaction effects, based on EDA and questions of interest:
+
+* `gender` * `age`
+* `gender` * `education`
+* `education` * `income`
+* `coupon` * `expiration`
+* `coupon` * `gender`
+
+We then performed stepwise model selection, using AIC as well as BIC as the criteria for variable selection. The full model resulted in improvement in the model fit (better AIC), but only improved the binned residual plot sightly. Since our data has high number of observations, we decided to proceed with backward selection using BIC. As per BIC, only the interaction between coupon and expiration is retained in our model. To further assess, which interactions should be incorporated in the model, we conducted an anova Chi-squared test and compare the p values. Given the nature of the data, there were multiple interactions that come out to be statistically significant. However, for the purpose of our analysis, we only kept the interaction between coupon and gender to simplify interpretations of our model.
+
+```{r, echo=FALSE,message=FALSE, results='hide', fig.width = 12, fig.height = 3.5}
+#############################
+reg_2 <- glm( Y ~ destination + passanger + weather + 
+                coupon + expiration + gender + age +
+                education + income + Bar + CoffeeHouse + 
+                direction_opp + occupation_class + 
+                coupon*(expiration + gender), data = coupon_new, family = binomial)
+
+rawresid2 <- residuals(reg_2,"resp")
+
+par(mfrow=c(1,2))
+
+arm::binnedplot(x=fitted(reg_2),y=rawresid2,xlab="Pred. probabilities",
+           col.int="red4",ylab="Avg. residuals",main="Binned residual plot_1",col.pts="navy",cex.lab = .8,cex.axis = .8,cex.main = .8,cex.sub = .8)
+
+roc(coupon_new$Y,fitted(reg_2),plot=T,print.thres="best",legacy.axes=T,
+    print.auc =T,col="red3",main = "ROC: Logistic Regression", cex.lab = .8,cex.axis = .8,cex.main = .8,cex.sub = .8)
+```
+
+The final model contains all main effects from the base logistic regression model, and the following interactions:
+* `coupon` * `expiration`
+* `coupon` * `gender`
+
+The binned residual plot for the final model also shows similar patterns as the full model. Specifically, the points are randomly distributed with no discernible pattern. For this model, there are fewer outliers although, it is only a marginal difference. These patterns imply that logistic regression assumption are not potentially violated. 
+All the attributes in our data are factor variables and therefore we cannot calculcate the VIF scores to assess multicollinearity issues. 
+
+To assess our final model's performance, we also observe the RoC curve.Initially, using mean as the cut-off threshold, a driver is predicted to be accept the coupon if the predicted probability is greater than or equal to mean, otherwise, decline. The model achieves 68% accuracy, 0.67 sensitivity, and 0.69 specificity. This means that the model predicted 68% of the data correctly. 0.67 sensitivity means that given a driver accepted the coupon, the model has 67% probability of predicting coupon was accepted. 0.69 specificity means that given coupon was declined, the model has 69% probability of predicting it was declined. In addition, the model also achieves the AUC score at 0.75. However we see that out model does a poor job in classifying when the coupon was accepted.We adjust the threshold as per the ROC curve , which improves accuracy to 69% and sensitivity to 73%.
+
+```{r, include= FALSE, out.width="50%",echo=FALSE,header= FALSE,fig.align ="center",message = FALSE, warning = FALSE, fig.height=3.5}
+Conf_mat <- confusionMatrix(as.factor(ifelse(fitted(reg_2) >= 0.527, "1","0")),
+                            as.factor(coupon_new$Y),positive = "1")
+Conf_mat$table
+Conf_mat$overall["Accuracy"];
+Conf_mat$byClass[c("Sensitivity","Specificity")] #True positive rate and True negative rate
+
+#let's repeat with the marginal percentage in the data
+Conf_mat <- confusionMatrix(as.factor(ifelse(fitted(reg_2) >= mean(coupon_new$Y), "1","0")),
+                            as.factor(coupon_new$Y),positive = "1")
+Conf_mat$table
+Conf_mat$overall["Accuracy"];
+Conf_mat$byClass[c("Sensitivity","Specificity")]
+#still not moving much.... the model can predict only so well
+```
+
+## Results 
+The standard estimates of all coefficients in our model were statistically significant. We exponentiate the standard estimates and their confidence intervals to interpret them on the odds scale. The model results are shown below.
+
+We can observe that all four categories of factors (Demographic, Coupon Specific, Driver Specific, and External) are statistically significant in influencing a driver's decision to accept a coupon at the 95% confidence level.
+
+- Keeping all else equal, compared to male drivers, female drivers have higher odds by 1.99 times of accepting a coupon, which is almost 100% higher. The odds of coupon acceptance for drivers under the age of 21 is found to be the highest which is 1.03 times or 3% more compared to age group 21-30. Compared to driver's with an associate degree, driver still in high school without a graduate degree have the highest odds of accepting a coupon, which 97% higher than the former.
+
+- The odds of accepting a coupon differ by type of coupon as well as its expiration. Keeping all else constant compared to a coupon for a Bar, the odds of accepting a coupon for Carry Out and Take Away is almost 7 times higher. On the other hand, counter intuitively, the odds of accepting a coupon that expires in 2 hours compared to one that expires in 24 hours is 0.68 times or 31% lesser.
+
+- Observing the interaction between coupon and expiration, there are many factors that are statistically significant. One of the interpretations for these combinations is that the odds of accepting a coupon for a CoffeeHouse that expires in 2 hours is 0.75 times, or decreases by 25%, compared to a coupon for a Bar that expires in 24 hours. Similarly looking at the interaction between coupon and Gender, we can interpret  one of the combinations as that, keeping everything else the same, the odds of male driver accepting a coupon for Carry out and Take away is 0.65 times or decreases by 35% in comparison to a female driver accepting a coupon to a Bar.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis', fig.height=3}
+# final_model <- lmer(log(ppm) ~  dosage + bulk_purchase + 
+#                       (1| state), data = streetrx_cleaned)
+# stargazer(final_model, title = "Hierarchical Model Summary", float = TRUE, no.space=TRUE, header=FALSE, single.row=TRUE, font.size="small", digits = 2, ci=TRUE, ci.level=0.95)
+
+reg_2 <- glm( Y ~ destination + passanger + weather + 
+                coupon + expiration + gender + age +
+                education + income + Bar + CoffeeHouse + 
+                direction_opp + occupation_class + 
+                coupon*(expiration + gender), data = coupon_new, family = binomial)
+
+library(xtable)
+options(xtable.comment = FALSE)
+xtable(reg_2, type ='latex', title = 'Resukts', header = FALSE, digits = 2, no.space = TRUE,font.size = "small", caption ="Logistic Regression Results (Log Odds Scale)",caption.placement = getOption("xtable.caption.placement", "top"))
+
+```
+
+## __Limitations and Conclusions__
+
+There are a few potential limitations in our model. Firstly, we removed the car variable due to missing data. While we cannot use missing value imputation methods in this case, it is possible that car variable may explain an essential amount of randomness in our model. The second major limitation is that the data used is not reliable as it is crowd sourced and any one can put in any value for the responses such as incorrect age and income. The third limitation is the nature of the data, since all the factors are categorical, it makes interpretation challenging. There are variables for which continuous data could be collected, such as age, time of day, coupon expiry. This will allow for better model fitting based on review of deviance and binned residuals of individual variables.
+
+
+To conclude, we note that the likelihood of accepting coupons, varies greatly with respect to demographic factors with Females accepting higher number of coupons compared to males. We also see, age group, income as well as education playing a role in whether a driver accepts a coupon or not where in we see that the levels for each of these variables is statistically significant. Acceptance of coupons is higher when the weather is sunny, and the driver's destination is no urgent place. The type of coupon seems to be a variable that is influencing a driver decision the most, wherein compared to a coupon to a Bar, Carry Out and Takeaway is preferred.
+
